@@ -1,0 +1,426 @@
+#!/bin/zsh
+#
+# awake — block the screen saver and auto-lock while automation drives this Mac.
+#
+# Changes no system settings: it only holds a caffeinate power assertion while
+# running. The moment it exits, lock behavior is back to whatever it was.
+#
+# https://github.com/ac1982/awake
+
+emulate -L zsh
+setopt no_unset
+
+zmodload zsh/datetime 2>/dev/null
+zmodload zsh/mathfunc 2>/dev/null
+zmodload zsh/zselect  2>/dev/null
+
+DEFAULT_DURATION=8h
+
+# ── Breathing indicator ─────────────────────────────────────────────────────
+BREATH_PERIOD=4.0     # seconds per breath
+BREATH_GAMMA=1.8      # >1 dwells longer in the dark half; linear looks like a
+                      # tug-of-war rather than breathing
+FPS_DELAY=5           # zselect ticks are 1/100 s → 20fps (dropped to 2fps when
+                      # there is no color to animate)
+typeset -F PI=3.14159265358979
+# The dark end is not black: terminal backgrounds vary, and a dot that reaches
+# pure black just vanishes against a dark theme.
+BR_R0=30 BR_G0=95  BR_B0=100
+BR_R1=94 BR_G1=248 BR_B1=220
+
+# ── Language ────────────────────────────────────────────────────────────────
+# Follow the Mac's own language first. On macOS, LANG is usually whatever the
+# terminal emulator decided, which says nothing about what the user picked in
+# System Settings — so AppleLanguages wins unless AWAKE_LANG overrides it.
+detect_lang() {
+  local tag=${AWAKE_LANG:-}
+  if [[ -z $tag ]]; then
+    local raw=$(defaults read -g AppleLanguages 2>/dev/null)
+    tag=${${raw//[$'\n'\"\(\) ]/}%%,*}
+  fi
+  [[ -z $tag ]] && tag=${LC_ALL:-${LC_MESSAGES:-${LANG:-en}}}
+  case ${tag:l} in
+    zh*) print -- zh ;;
+    *)   print -- en ;;
+  esac
+}
+LANG_TAG=$(detect_lang)
+
+typeset -gA T
+if [[ $LANG_TAG == zh ]]; then
+  T=(
+    tagline     "在自动化驱动这台 Mac 期间挡住屏保和自动锁屏"
+    u_fg        "前台保持 8 小时，Ctrl-C 结束"
+    u_dur       "前台保持 2 小时"
+    u_dur_alt   "也支持 90m / 45s / 5400"
+    u_bg        "后台保持，终端可关"
+    u_status    "看有几个实例在跑、跑了多久"
+    u_off       "停掉所有实例"
+    u_off_alt   "含别的终端里的"
+    u_note1     "不改任何系统设置：只在运行期间持有 caffeinate 电源断言，"
+    u_note2     "进程一退出，锁屏行为立刻恢复原状。"
+    e_dur       "看不懂的时长「%s」，用 30m / 2h / 5400 这样的写法"
+    e_opt       "未知选项 %s"
+    e_opt_alt   "试试 awake --help"
+    e_pos       "时长得大于 0"
+    w_existing  "已有 %d %s在跑 (pid %s)，本次再开一个"
+    bg_run      "后台保持唤醒 %s"
+    bg_hint     "查看 awake status  ·  停止 awake off"
+    fg_title    "保持唤醒 %s"
+    fg_hint     "屏保与自动锁屏已暂停  ·  Ctrl-C 结束"
+    st_idle     "awake 未运行"
+    st_ss_on    "屏保 %s后启动"
+    st_ss_off   "屏保已关闭"
+    st_ss_unk   "读不到屏保设置"
+    st_run      "awake 运行中"
+    st_inst_1   "个实例"
+    st_inst_n   "个实例"
+    st_elapsed  "已保持"
+    st_stop     "停止：awake off"
+    as_missing  "未持有"
+    off_none    "当前没有在跑"
+    off_done    "已停止 %d %s (pid %s)"
+    restored    "锁屏行为恢复原状"
+    fin_stopped "已停止"
+    fin_expired "%s 到期"
+    nt_run      "保持唤醒 %s (pid %s)"
+    nt_done     "结束，锁屏行为恢复原状"
+    unit_min    "%d 分钟"
+    unit_sec    "%d 秒"
+  )
+else
+  T=(
+    tagline     "Block the screen saver and auto-lock while automation drives this Mac"
+    u_fg        "stay awake for 8 hours, Ctrl-C to stop"
+    u_dur       "stay awake for 2 hours"
+    u_dur_alt   "also 90m / 45s / 5400"
+    u_bg        "run in the background, terminal can be closed"
+    u_status    "show running instances and how long they have held"
+    u_off       "stop every instance"
+    u_off_alt   "including ones in other terminals"
+    u_note1     "Changes no system settings: it only holds a caffeinate power"
+    u_note2     "assertion while running. On exit, lock behavior is back to normal."
+    e_dur       "unrecognized duration \"%s\" — use 30m / 2h / 5400"
+    e_opt       "unknown option %s"
+    e_opt_alt   "try awake --help"
+    e_pos       "duration must be greater than 0"
+    w_existing  "%d %s already running (pid %s), starting another"
+    bg_run      "staying awake for %s in the background"
+    bg_hint     "check: awake status  ·  stop: awake off"
+    fg_title    "staying awake for %s"
+    fg_hint     "screen saver and auto-lock paused  ·  Ctrl-C to stop"
+    st_idle     "awake is not running"
+    st_ss_on    "screen saver starts after %s"
+    st_ss_off   "screen saver is disabled"
+    st_ss_unk   "could not read the screen saver setting"
+    st_run      "awake is running"
+    st_inst_1   "instance"
+    st_inst_n   "instances"
+    st_elapsed  "held for"
+    st_stop     "stop with: awake off"
+    as_missing  "not held"
+    off_none    "nothing is running"
+    off_done    "stopped %d %s (pid %s)"
+    restored    "lock behavior restored"
+    fin_stopped "stopped"
+    fin_expired "%s elapsed"
+    nt_run      "staying awake for %s (pid %s)"
+    nt_done     "done, lock behavior restored"
+    unit_min    "%d min"
+    unit_sec    "%d sec"
+  )
+fi
+
+# ── Terminal capabilities ───────────────────────────────────────────────────
+# Anything that is not a TTY (a pipe, a redirect, a calling script) gets plain
+# text, or `awake -b | tee log` ends up full of escape codes.
+[[ -t 1 ]] && TTY_OK=1 || TTY_OK=0
+if (( TTY_OK )) && [[ -z ${NO_COLOR:-} && ${TERM:-} != (dumb|) ]]; then
+  COLOR_OK=1
+else
+  COLOR_OK=0
+fi
+[[ ${COLORTERM:-} == (truecolor|24bit) ]] && TRUECOLOR=1 || TRUECOLOR=0
+# Animation needs a TTY, color, and sin(); missing any of those falls back to a
+# static dot that still counts down.
+if (( TTY_OK && COLOR_OK )) && zmodload -e zsh/mathfunc; then ANIM=1; else ANIM=0; fi
+zmodload -e zsh/zselect && HAVE_ZSELECT=1 || HAVE_ZSELECT=0
+
+# Cursor control is judged separately from color: NO_COLOR means no color, not
+# no redrawing. Without \e[K a short frame cannot paint over a longer one.
+if (( TTY_OK )); then
+  CUR_HIDE=$'\e[?25l'; CUR_SHOW=$'\e[?25h'; LINE_CLR=$'\r\e[K'
+else
+  CUR_HIDE= CUR_SHOW= LINE_CLR=
+fi
+if (( COLOR_OK )); then
+  C_RST=$'\e[0m'; C_DIM=$'\e[38;5;242m'; C_TXT=$'\e[38;5;252m'
+  C_ACC=$'\e[38;5;80m'; C_WARN=$'\e[38;5;179m'; C_ERR=$'\e[38;5;167m'
+else
+  C_RST= C_DIM= C_TXT= C_ACC= C_WARN= C_ERR=
+fi
+
+DOT_ON='●'; DOT_OFF='○'; MARK_ERR='✗'; MARK_OK='✓'; MARK_WARN='!'
+BAR_EMPTY=
+# Thick for elapsed, thin for remaining: relying on color alone makes the bar
+# unreadable under a low-contrast theme or NO_COLOR. (l) needs a named
+# parameter — an empty one trips no_unset.
+BAR_DONE=${(l:96::━:)BAR_EMPTY}
+BAR_REST=${(l:96::─:)BAR_EMPTY}
+
+die() { print -u2 -- "${C_ERR}${MARK_ERR}${C_RST}  $*"; exit 1 }
+
+usage() {
+  print -r -- "${C_ACC}awake${C_RST} ${C_DIM}·${C_RST} $T[tagline]"
+  print -r -- ""
+  print -r -- "  ${C_TXT}awake${C_RST}            $T[u_fg]"
+  print -r -- "  ${C_TXT}awake 2h${C_RST}         $T[u_dur] ${C_DIM}($T[u_dur_alt])${C_RST}"
+  print -r -- "  ${C_TXT}awake -b 2h${C_RST}      $T[u_bg]"
+  print -r -- "  ${C_TXT}awake status${C_RST}     $T[u_status]"
+  print -r -- "  ${C_TXT}awake off${C_RST}        $T[u_off] ${C_DIM}($T[u_off_alt])${C_RST}"
+  print -r -- ""
+  print -r -- "  ${C_DIM}$T[u_note1]${C_RST}"
+  print -r -- "  ${C_DIM}$T[u_note2]${C_RST}"
+}
+
+# "2h" / "90m" / "45s" / "5400" -> seconds
+parse_duration() {
+  local v=$1
+  if   [[ $v == <->     ]]; then print -- $v
+  elif [[ $v == <->[sS] ]]; then print -- ${v%?}
+  elif [[ $v == <->[mM] ]]; then print -- $(( ${v%?} * 60 ))
+  elif [[ $v == <->[hH] ]]; then print -- $(( ${v%?} * 3600 ))
+  else die "$(printf -- $T[e_dur] "${C_TXT}$v${C_RST}")"
+  fi
+}
+
+# seconds -> "2h30m" / "45s", for humans reading a duration
+human() {
+  local h=$(( $1 / 3600 )) m=$(( ($1 % 3600) / 60 )) s=$(( $1 % 60 ))
+  if (( h == 0 && m == 0 )); then print -- "${s}s"; return; fi
+  (( h > 0 )) && print -n -- "${h}h"
+  (( m > 0 )) && print -n -- "${m}m"
+  print
+}
+
+# ── Animation hot path ──────────────────────────────────────────────────────
+# These write into globals instead of printing for the caller to $(...) —
+# command substitution forks. Measured: 3000 substitutions 1.48s, 3000
+# printf -v 0.003s. At 20fps over 8 hours that is the difference between
+# seconds of CPU and a quarter hour of it.
+
+CLK=
+clock() {
+  # Two separate `local` statements on purpose: a $(( )) in the same statement
+  # is expanded before `local` runs, when s does not exist yet — which under
+  # no_unset aborts the script.
+  local s=$1
+  local h=$(( s / 3600 )) m=$(( (s % 3600) / 60 )) sec=$(( s % 60 ))
+  if   (( h > 0 )); then printf -v CLK '%d:%02d:%02d' $h $m $sec
+  elif (( m > 0 )); then printf -v CLK '%d:%02d' $m $sec
+  else                   printf -v CLK '%ds' $sec
+  fi
+}
+
+BSEQ=
+breath_seq() {
+  local lv=$1
+  if (( ! COLOR_OK )); then BSEQ=; return; fi
+  if (( TRUECOLOR )); then
+    printf -v BSEQ '\e[38;2;%d;%d;%dm' \
+      $(( int(BR_R0 + (BR_R1 - BR_R0) * lv) )) \
+      $(( int(BR_G0 + (BR_G1 - BR_G0) * lv) )) \
+      $(( int(BR_B0 + (BR_B1 - BR_B0) * lv) ))
+  else
+    local -a ramp=( 23 23 24 30 31 37 44 45 51 87 123 )
+    printf -v BSEQ '\e[38;5;%dm' ${ramp[$(( int(lv * (${#ramp} - 1)) + 1 ))]}
+  fi
+}
+
+bar_width() {
+  local cols=${COLUMNS:-80} w=28
+  (( cols <= 0 )) && cols=80          # COLUMNS is 0, not unset, off a TTY
+  (( cols < 58 )) && w=$(( cols - 30 ))
+  (( w < 8 )) && w=8
+  print -- $w
+}
+
+# Every caffeinate this tool started. No pidfile: that only remembers the last
+# instance, so one started in another terminal becomes unreachable. The
+# "-disu -t" combination is specific to this script.
+running_pids() { pgrep -f 'caffeinate -disu -t' 2>/dev/null }
+
+# What happens when awake is NOT running — read the real setting rather than
+# hardcoding one machine's value.
+screensaver_hint() {
+  local idle=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null)
+  if [[ $idle != <-> ]]; then
+    print -- "$T[st_ss_unk]"
+  elif (( idle == 0 )); then
+    print -- "$T[st_ss_off]"
+  elif (( idle < 60 )); then
+    printf -- "$T[st_ss_on]" "$(printf -- $T[unit_sec] $idle)"
+  else
+    printf -- "$T[st_ss_on]" "$(printf -- $T[unit_min] $(( idle / 60 )))"
+  fi
+}
+
+plural() { (( $1 == 1 )) && print -- "$T[st_inst_1]" || print -- "$T[st_inst_n]" }
+
+# ── Subcommands ─────────────────────────────────────────────────────────────
+stop_running() {
+  local -a pids=( ${(f)"$(running_pids)"} )
+  print
+  if (( ${#pids} == 0 )); then
+    print -r -- "  ${C_DIM}${DOT_OFF}  $T[off_none]${C_RST}"
+    print
+    return
+  fi
+  kill $pids 2>/dev/null
+  print -r -- "  ${C_DIM}${DOT_OFF}${C_RST}  ${C_TXT}$(printf -- $T[off_done] ${#pids} "$(plural ${#pids})" "${pids}")${C_RST}"
+  print -r -- "     ${C_DIM}$T[restored]${C_RST}"
+  print
+}
+
+show_status() {
+  local -a pids=( ${(f)"$(running_pids)"} )
+  print
+  if (( ${#pids} == 0 )); then
+    print -r -- "  ${C_DIM}${DOT_OFF}${C_RST}  ${C_TXT}$T[st_idle]${C_RST}"
+    print -r -- "     ${C_DIM}$(screensaver_hint)${C_RST}"
+    print
+    return
+  fi
+  print -r -- "  ${C_ACC}${DOT_ON}${C_RST}  ${C_TXT}$T[st_run]${C_RST} ${C_DIM}·${C_RST} ${C_TXT}${#pids}${C_RST} ${C_DIM}$(plural ${#pids})${C_RST}"
+  print
+  local p
+  for p in $pids; do
+    printf '     %spid%s %-7s %s%s%s %-10s %s%s%s\n' \
+      "$C_DIM" "$C_RST" "$p" "$C_DIM" "$T[st_elapsed]" "$C_RST" \
+      "$(ps -o etime= -p $p | tr -d ' ')" \
+      "$C_DIM" "$(ps -o tty= -p $p | tr -d ' ')" "$C_RST"
+  done
+  print
+  # Matched natively rather than with grep: this is worth not betting on which
+  # grep implementation is first on PATH.
+  local -a asserts=( ${(f)"$(pmset -g assertions 2>/dev/null)"} )
+  local a line held
+  for a in PreventUserIdleDisplaySleep UserIsActive; do
+    held=0
+    for line in $asserts; do
+      # Summary rows look like "   UserIsActive                   1"
+      [[ $line == "   $a "* ]] || continue
+      [[ ${line##* } == 1 ]] && held=1
+      break
+    done
+    if (( held )); then
+      print -r -- "     ${C_ACC}${MARK_OK}${C_RST} ${C_DIM}${a}${C_RST}"
+    else
+      print -r -- "     ${C_WARN}${MARK_WARN}${C_RST} ${C_DIM}${a} — $T[as_missing]${C_RST}"
+    fi
+  done
+  print
+  print -r -- "     ${C_DIM}$T[st_stop]${C_RST}"
+  print
+}
+
+# ── Arguments ───────────────────────────────────────────────────────────────
+background=0
+duration=""
+while (( $# )); do
+  case $1 in
+    off|stop)        stop_running; exit 0 ;;
+    status)          show_status;  exit 0 ;;
+    -b|--background) background=1 ;;
+    -h|--help)       usage; exit 0 ;;
+    -*)              die "$(printf -- $T[e_opt] "${C_TXT}$1${C_RST}")${C_DIM} ($T[e_opt_alt])${C_RST}" ;;
+    *)               duration=$1 ;;
+  esac
+  shift
+done
+
+secs=$(parse_duration ${duration:-$DEFAULT_DURATION}) || exit 1
+(( secs > 0 )) || die "$T[e_pos]"
+
+# Warn about existing instances but leave them alone — assertions stack, so an
+# extra one is harmless, and that instance may be something in active use
+# elsewhere. Killing it to be tidy would be the unhelpful move.
+existing=( ${(f)"$(running_pids)"} )
+(( ${#existing} > 0 )) && \
+  print -r -- "  ${C_WARN}${MARK_WARN}${C_RST}  ${C_DIM}$(printf -- $T[w_existing] ${#existing} "$(plural ${#existing})" "${existing}")${C_RST}"
+
+# -d blocks display sleep (and with it the screen saver)   -i blocks idle sleep
+# -s blocks sleep while on AC power   -u asserts "user is active", which keeps
+# the idle timer from ever accumulating
+if (( background )); then
+  nohup caffeinate -disu -t $secs >/dev/null 2>&1 &
+  cpid=$!
+  disown
+  print
+  print -r -- "  ${C_ACC}${DOT_ON}${C_RST}  ${C_TXT}$(printf -- $T[bg_run] "$(human $secs)")${C_RST} ${C_DIM}(pid $cpid)${C_RST}"
+  print -r -- "     ${C_DIM}$T[bg_hint]${C_RST}"
+  print
+  exit 0
+fi
+
+# ── Foreground: breathing indicator ─────────────────────────────────────────
+caffeinate -disu -t $secs &
+cpid=$!
+
+finish() {
+  print -rn -- "$LINE_CLR"
+  print -r -- "  ${C_DIM}${DOT_OFF}  $1  ·  $T[restored]${C_RST}"
+  print -rn -- "$CUR_SHOW"
+}
+trap 'kill $cpid 2>/dev/null; finish "$T[fin_stopped]"; exit 0' INT TERM
+trap 'print -rn -- "$CUR_SHOW"' EXIT
+
+if (( ! TTY_OK )); then
+  # Piped or redirected: no animation, just wait
+  print -r -- "awake: $(printf -- $T[nt_run] "$(human $secs)" "$cpid")"
+  wait $cpid
+  print -r -- "awake: $T[nt_done]"
+  exit 0
+fi
+
+print
+print -r -- "  ${C_TXT}awake${C_RST} ${C_DIM}·${C_RST} ${C_TXT}$(printf -- $T[fg_title] "$(human $secs)")${C_RST}"
+print -r -- "  ${C_DIM}$T[fg_hint]${C_RST}"
+print
+print -rn -- "$CUR_HIDE"
+
+# Without a breathing dot only the seconds move; 20fps would be wasted wakeups.
+(( ANIM )) || FPS_DELAY=50
+start=$EPOCHREALTIME
+barw=$(bar_width)
+trap 'barw=$(bar_width)' WINCH
+lv=1.0
+
+# Everything in this loop is a zsh builtin (printf / kill / arithmetic /
+# zselect), so it forks zero times per frame. Redraw in place with \r\e[K and
+# never emit a newline: newline plus cursor-up scrolls the header off the
+# screen once the prompt reaches the bottom of the terminal.
+while kill -0 $cpid 2>/dev/null; do
+  el=$(( EPOCHREALTIME - start ))
+  remain=$(( int(secs - el) )); (( remain < 0 )) && remain=0
+  fill=$(( int(barw * el / secs) )); (( fill > barw )) && fill=barw
+  rest=$(( barw - fill ))
+
+  (( ANIM )) && lv=$(( ( (sin(2*PI*el/BREATH_PERIOD - PI/2) + 1) / 2 ) ** BREATH_GAMMA ))
+  breath_seq $lv
+  clock $remain
+
+  printf '%s  %s%s%s  %s%-9s%s %s%s%s%s%s' \
+    "$LINE_CLR" \
+    "$BSEQ" "$DOT_ON" "$C_RST" \
+    "$C_TXT" "$CLK" "$C_RST" \
+    "$C_ACC" "${BAR_DONE[1,fill]}" "$C_DIM" "${BAR_REST[1,rest]}" "$C_RST"
+
+  if (( HAVE_ZSELECT )); then zselect -t $FPS_DELAY; else sleep 0.05; fi
+done
+
+if (( int(EPOCHREALTIME - start) >= secs - 1 )); then
+  finish "$(printf -- $T[fin_expired] "$(human $secs)")"
+else
+  finish "$T[fin_stopped]"
+fi
