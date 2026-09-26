@@ -1,0 +1,33 @@
+#compdef awake
+# zsh completion for awake. Put this directory on fpath before compinit:
+#   fpath=(/path/to/awake/completions $fpath)
+
+# Past --, the rest of the line is the user's own command: hand it to zsh's
+# normal completion as if typed on its own
+local i=${words[(i)--]}
+if (( i < CURRENT )); then
+  shift $i words
+  (( CURRENT -= i ))
+  _normal
+  return
+fi
+
+local -a durations=( 30m 1h 2h 4h 8h )
+local -a subcommands=(
+  'status:show running instances and how long they have held'
+  'off:stop every instance'
+)
+local ret=1
+_arguments -s \
+  '(-b --background)'{-b,--background}'[run in the background]' \
+  '(-w --wait)'{-w,--wait}'[stay awake until this pid exits]:pid:_pids' \
+  '(- *)'{-h,--help}'[show help]' \
+  '--[stay awake while a command runs]' \
+  '*: :->args' && ret=0
+
+if [[ $state == args ]]; then
+  # status and off act immediately, so they only make sense as the first word
+  (( CURRENT == 2 )) && _describe -t subcommands subcommand subcommands && ret=0
+  compadd -X duration -a durations && ret=0
+fi
+return ret

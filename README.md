@@ -40,6 +40,26 @@ It stays a zsh script on purpose. The animation needs floating-point math and
 `$EPOCHREALTIME`. The bash that macOS ships (3.2) has none of these, so a
 port would fork `sleep` and `date` on every frame.
 
+### Tab completion
+
+Optional. `completions/` has one file per shell; point your shell at the one
+you use:
+
+```sh
+# zsh: in ~/.zshrc, before compinit
+fpath=(/path/to/awake/completions $fpath)
+
+# bash: in ~/.bashrc
+source /path/to/awake/completions/awake.bash
+
+# fish
+ln -s /path/to/awake/completions/awake.fish ~/.config/fish/completions/
+```
+
+All three complete the same things: `status` and `off` as the first word,
+common durations, your own pids after `-w`, and after `--` whatever the
+command itself completes.
+
 ## Usage
 
 ```
