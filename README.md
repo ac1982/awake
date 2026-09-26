@@ -37,11 +37,35 @@ Requires zsh (macOS ships it) and nothing else outside the base system:
 
 ```
 awake            stay awake for 8 hours, Ctrl-C to stop
-awake 2h         stay awake for 2 hours (also 90m / 45s / 5400)
+awake 2h         stay awake for 2 hours (also 1h30m / 90m / 45s / 5400)
 awake -b 2h      run in the background, terminal can be closed
+awake -- cmd…    stay awake while the command runs, passing its exit code
+awake -w 1234    stay awake until pid 1234 exits (the duration is a ceiling, 8h by default)
 awake status     show running instances and how long they have held
 awake off        stop every instance, including ones in other terminals
 ```
+
+Durations are written largest unit first, each unit at most once: `2h`,
+`1h30m`, `2m30s`, or a bare number of seconds. That is exactly the form awake
+prints, so any duration it shows you can be typed back in.
+
+### Tie it to the automation, not a guess
+
+A fixed duration is a guess: too long and the Mac stays unlockable for hours
+after the run ends, too short and it locks mid-run. Hand awake the run itself
+instead and the hold ends the moment the run does:
+
+```sh
+awake -- python agent.py        # held while the command runs
+awake 3h -w "$(pgrep -n node)"  # held until an already-running process exits
+```
+
+The duration still applies, as a ceiling: a hung process cannot keep the Mac
+unlockable forever. With `--`, awake stays out of the command's way. It prints
+one line to stderr before and one after, passes the command's exit code
+through, and leaves Ctrl-C to the command, so a program that handles Ctrl-C
+itself keeps its protection. If awake is killed outright, `caffeinate` notices
+and releases the hold anyway.
 
 `status` reports what is actually held, not what was requested:
 
@@ -66,7 +90,8 @@ you what will actually happen rather than a hardcoded guess:
 
 ## How it works
 
-One `caffeinate -disu -t <seconds>`:
+One `caffeinate -disu -t <seconds>`, plus `-w <pid>` when there is a process
+to wait for:
 
 | flag | effect |
 | --- | --- |
@@ -74,6 +99,7 @@ One `caffeinate -disu -t <seconds>`:
 | `-i` | blocks idle system sleep |
 | `-s` | blocks sleep while on AC power |
 | `-u` | asserts "user is active", so the idle timer never accumulates |
+| `-w` | releases early when the given process exits |
 
 `-d` alone stops the display from sleeping but the screen saver has its own
 idle timer, and a screen saver is nearly as bad as a lock for automation: the
@@ -83,6 +109,7 @@ from ever building up.
 Instances are tracked by their command line rather than a pidfile. A pidfile
 only remembers the last one started, so an instance launched in another
 terminal becomes unreachable — `awake off` would silently miss it.
+Only your own instances count; another user's are not yours to stop.
 
 Starting a second instance while one is running is allowed. Assertions stack,
 so it is harmless, and the running one may be something in active use

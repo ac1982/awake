@@ -52,18 +52,26 @@ if [[ $LANG_TAG == zh ]]; then
     tagline     "在自动化驱动这台 Mac 期间挡住屏保和自动锁屏"
     u_fg        "前台保持 8 小时，Ctrl-C 结束"
     u_dur       "前台保持 2 小时"
-    u_dur_alt   "也支持 90m / 45s / 5400"
+    u_dur_alt   "也支持 1h30m / 90m / 45s / 5400"
     u_bg        "后台保持，终端可关"
+    u_cmd       "命令运行期间保持，退出码原样返回"
+    u_wait      "保持到 pid 1234 退出"
+    u_cap       "时长是上限，默认 8 小时"
     u_status    "看有几个实例在跑、跑了多久"
     u_off       "停掉所有实例"
     u_off_alt   "含别的终端里的"
     u_note1     "不改任何系统设置：只在运行期间持有 caffeinate 电源断言，"
     u_note2     "进程一退出，锁屏行为立刻恢复原状。"
-    e_dur       "看不懂的时长「%s」，用 30m / 2h / 5400 这样的写法"
+    e_dur       "看不懂的时长「%s」，用 30m / 2h / 1h30m / 5400 这样的写法"
     e_opt       "未知选项 %s"
     e_opt_alt   "试试 awake --help"
     e_pos       "时长得大于 0"
+    e_pid       "-w 后面要跟一个正在运行的进程 pid，而不是「%s」"
+    e_cmd       "-- 后面没有要运行的命令"
+    e_combo     "%s 和 %s 不能同时用"
     w_existing  "已有 %d %s在跑 (pid %s)，本次再开一个"
+    span_for    "%s"
+    span_until  "直到 %s 退出，最长 %s"
     bg_run      "后台保持唤醒 %s"
     bg_hint     "查看 awake status  ·  停止 awake off"
     fg_title    "保持唤醒 %s"
@@ -83,6 +91,7 @@ if [[ $LANG_TAG == zh ]]; then
     restored    "锁屏行为恢复原状"
     fin_stopped "已停止"
     fin_expired "%s 到期"
+    fin_exited  "%s 已退出"
     nt_run      "保持唤醒 %s (pid %s)"
     nt_done     "结束，锁屏行为恢复原状"
     unit_min    "%d 分钟"
@@ -93,21 +102,29 @@ else
     tagline     "Block the screen saver and auto-lock while automation drives this Mac"
     u_fg        "stay awake for 8 hours, Ctrl-C to stop"
     u_dur       "stay awake for 2 hours"
-    u_dur_alt   "also 90m / 45s / 5400"
+    u_dur_alt   "also 1h30m / 90m / 45s / 5400"
     u_bg        "run in the background, terminal can be closed"
+    u_cmd       "stay awake while the command runs, passing its exit code"
+    u_wait      "stay awake until pid 1234 exits"
+    u_cap       "the duration is a ceiling, 8h by default"
     u_status    "show running instances and how long they have held"
     u_off       "stop every instance"
     u_off_alt   "including ones in other terminals"
     u_note1     "Changes no system settings: it only holds a caffeinate power"
     u_note2     "assertion while running. On exit, lock behavior is back to normal."
-    e_dur       "unrecognized duration \"%s\" — use 30m / 2h / 5400"
+    e_dur       "unrecognized duration \"%s\" — use 30m / 2h / 1h30m / 5400"
     e_opt       "unknown option %s"
     e_opt_alt   "try awake --help"
     e_pos       "duration must be greater than 0"
+    e_pid       "-w needs the pid of a running process, not \"%s\""
+    e_cmd       "nothing to run after --"
+    e_combo     "%s and %s cannot be used together"
     w_existing  "%d %s already running (pid %s), starting another"
-    bg_run      "staying awake for %s in the background"
+    span_for    "for %s"
+    span_until  "until %s exits, at most %s"
+    bg_run      "staying awake %s in the background"
     bg_hint     "check: awake status  ·  stop: awake off"
-    fg_title    "staying awake for %s"
+    fg_title    "staying awake %s"
     fg_hint     "screen saver and auto-lock paused  ·  Ctrl-C to stop"
     st_idle     "awake is not running"
     st_ss_on    "screen saver starts after %s"
@@ -124,7 +141,8 @@ else
     restored    "lock behavior restored"
     fin_stopped "stopped"
     fin_expired "%s elapsed"
-    nt_run      "staying awake for %s (pid %s)"
+    fin_exited  "%s exited"
+    nt_run      "staying awake %s (pid %s)"
     nt_done     "done, lock behavior restored"
     unit_min    "%d min"
     unit_sec    "%d sec"
@@ -176,6 +194,8 @@ usage() {
   print -r -- "  ${C_TXT}awake${C_RST}            $T[u_fg]"
   print -r -- "  ${C_TXT}awake 2h${C_RST}         $T[u_dur] ${C_DIM}($T[u_dur_alt])${C_RST}"
   print -r -- "  ${C_TXT}awake -b 2h${C_RST}      $T[u_bg]"
+  print -r -- "  ${C_TXT}awake -- cmd…${C_RST}    $T[u_cmd]"
+  print -r -- "  ${C_TXT}awake -w 1234${C_RST}    $T[u_wait] ${C_DIM}($T[u_cap])${C_RST}"
   print -r -- "  ${C_TXT}awake status${C_RST}     $T[u_status]"
   print -r -- "  ${C_TXT}awake off${C_RST}        $T[u_off] ${C_DIM}($T[u_off_alt])${C_RST}"
   print -r -- ""
@@ -183,24 +203,31 @@ usage() {
   print -r -- "  ${C_DIM}$T[u_note2]${C_RST}"
 }
 
-# "2h" / "90m" / "45s" / "5400" -> seconds
+# One duration grammar, both directions: parse_duration reads exactly what
+# human prints, so any duration awake shows you can be typed back in.
+# Units run h → m → s, each at most once; a bare number is seconds.
+
+# "2h" / "1h30m" / "90s" / "5400" -> seconds
 parse_duration() {
-  local v=$1
-  if   [[ $v == <->     ]]; then print -- $v
-  elif [[ $v == <->[sS] ]]; then print -- ${v%?}
-  elif [[ $v == <->[mM] ]]; then print -- $(( ${v%?} * 60 ))
-  elif [[ $v == <->[hH] ]]; then print -- $(( ${v%?} * 3600 ))
-  else die "$(printf -- $T[e_dur] "${C_TXT}$v${C_RST}")"
-  fi
+  local v=${1:l}
+  if [[ $v == <-> ]]; then print -- $v; return; fi
+  [[ -n $v && $v == (<->h|)(<->m|)(<->s|) ]] ||
+    die "$(printf -- $T[e_dur] "${C_TXT}$1${C_RST}")"
+  # The pattern has just proved v is digits and h/m/s only, so rewriting the
+  # units into arithmetic is safe: "1h30m" -> "1*3600+30*60+0"
+  print -- $(( ${${${v//h/*3600+}//m/*60+}//s/+}0 ))
 }
 
-# seconds -> "2h30m" / "45s", for humans reading a duration
+# seconds -> "2h" / "1h30m" / "1m30s" / "45s". Lossless: dropping the seconds
+# would announce `awake 90s` as "1m".
 human() {
-  local h=$(( $1 / 3600 )) m=$(( ($1 % 3600) / 60 )) s=$(( $1 % 60 ))
-  if (( h == 0 && m == 0 )); then print -- "${s}s"; return; fi
-  (( h > 0 )) && print -n -- "${h}h"
-  (( m > 0 )) && print -n -- "${m}m"
-  print
+  local s=$1
+  local h=$(( s / 3600 )) m=$(( s % 3600 / 60 )) r=$(( s % 60 ))
+  local out=
+  (( h )) && out+=${h}h
+  (( m )) && out+=${m}m
+  (( r || ! (h || m) )) && out+=${r}s
+  print -- $out
 }
 
 # ── Animation hot path ──────────────────────────────────────────────────────
@@ -247,8 +274,10 @@ bar_width() {
 
 # Every caffeinate this tool started. No pidfile: that only remembers the last
 # instance, so one started in another terminal becomes unreachable. The
-# "-disu -t" combination is specific to this script.
-running_pids() { pgrep -f 'caffeinate -disu -t' 2>/dev/null }
+# "-disu -t" combination is specific to this script. -U: another user's
+# instances are not ours to count, and `off` could not kill them anyway — it
+# would report them stopped while they kept running.
+running_pids() { pgrep -U $UID -f 'caffeinate -disu -t' 2>/dev/null }
 
 # What happens when awake is NOT running — read the real setting rather than
 # hardcoding one machine's value.
@@ -327,44 +356,101 @@ show_status() {
 # ── Arguments ───────────────────────────────────────────────────────────────
 background=0
 duration=""
+watch=""          # pid whose exit ends the hold early
+run=0             # 1 when a command follows --
+typeset -a cmd
 while (( $# )); do
   case $1 in
     off|stop)        stop_running; exit 0 ;;
     status)          show_status;  exit 0 ;;
     -b|--background) background=1 ;;
+    -w|--wait)
+      # ps rather than kill -0: kill -0 fails on a live process owned by
+      # another user, and waiting on one of those is perfectly fine
+      [[ ${2:-} == <-> ]] && ps -p $2 >/dev/null 2>&1 ||
+        die "$(printf -- $T[e_pid] "${C_TXT}${2:-}${C_RST}")"
+      watch=$2; shift ;;
     -h|--help)       usage; exit 0 ;;
+    --)              run=1; shift; cmd=( "$@" ); break ;;
     -*)              die "$(printf -- $T[e_opt] "${C_TXT}$1${C_RST}")${C_DIM} ($T[e_opt_alt])${C_RST}" ;;
     *)               duration=$1 ;;
   esac
   shift
 done
 
+# A command owns the terminal, so it cannot also be detached; and it already
+# names the process to wait for.
+(( run && background ))      && die "$(printf -- $T[e_combo] -b --)"
+(( run )) && [[ -n $watch ]] && die "$(printf -- $T[e_combo] -w --)"
+(( run && ! ${#cmd} ))       && die "$T[e_cmd]"
+
 secs=$(parse_duration ${duration:-$DEFAULT_DURATION}) || exit 1
 (( secs > 0 )) || die "$T[e_pos]"
 
-# Warn about existing instances but leave them alone — assertions stack, so an
-# extra one is harmless, and that instance may be something in active use
-# elsewhere. Killing it to be tidy would be the unhelpful move.
-existing=( ${(f)"$(running_pids)"} )
-(( ${#existing} > 0 )) && \
-  print -r -- "  ${C_WARN}${MARK_WARN}${C_RST}  ${C_DIM}$(printf -- $T[w_existing] ${#existing} "$(plural ${#existing})" "${existing}")${C_RST}"
-
+# Every mode is the same caffeinate; -w and -- only add a reason to let go
+# sooner. The duration stays as a ceiling rather than being replaced, so a
+# hung process cannot keep the Mac unlockable indefinitely — and -t keeps the
+# command line matching running_pids.
+#
+# A command is watched through this script's own pid rather than its own: it
+# has to run in the foreground to keep the terminal (a background job in a
+# script gets /dev/null for stdin), and if the script is killed outright,
+# caffeinate still sees it go and lets go too.
+#
 # -d blocks display sleep (and with it the screen saver)   -i blocks idle sleep
 # -s blocks sleep while on AC power   -u asserts "user is active", which keeps
 # the idle timer from ever accumulating
+(( run )) && watch=$$
+typeset -a caff=( caffeinate -disu -t $secs )
+[[ -n $watch ]] && caff+=( -w $watch )
+
+if   (( run ));         then span=$(printf -- $T[span_until] "${cmd[1]:t}" "$(human $secs)")
+elif [[ -n $watch ]];   then span=$(printf -- $T[span_until] "pid $watch" "$(human $secs)")
+else                         span=$(printf -- $T[span_for] "$(human $secs)")
+fi
+
+# Warn about existing instances but leave them alone — assertions stack, so an
+# extra one is harmless, and that instance may be something in active use
+# elsewhere. Killing it to be tidy would be the unhelpful move. stderr, so a
+# command's stdout stays its own.
+existing=( ${(f)"$(running_pids)"} )
+(( ${#existing} > 0 )) && \
+  print -u2 -r -- "  ${C_WARN}${MARK_WARN}${C_RST}  ${C_DIM}$(printf -- $T[w_existing] ${#existing} "$(plural ${#existing})" "${existing}")${C_RST}"
+
 if (( background )); then
-  nohup caffeinate -disu -t $secs >/dev/null 2>&1 &
+  nohup $caff >/dev/null 2>&1 &
   cpid=$!
   disown
   print
-  print -r -- "  ${C_ACC}${DOT_ON}${C_RST}  ${C_TXT}$(printf -- $T[bg_run] "$(human $secs)")${C_RST} ${C_DIM}(pid $cpid)${C_RST}"
+  print -r -- "  ${C_ACC}${DOT_ON}${C_RST}  ${C_TXT}$(printf -- $T[bg_run] "$span")${C_RST} ${C_DIM}(pid $cpid)${C_RST}"
   print -r -- "     ${C_DIM}$T[bg_hint]${C_RST}"
   print
   exit 0
 fi
 
+# ── Command: hold while it runs ─────────────────────────────────────────────
+if (( run )); then
+  # Ctrl-C reaches the whole foreground process group. caffeinate starts with
+  # INT ignored so that a command which handles Ctrl-C itself (a REPL, an
+  # agent asking to confirm) keeps its protection; the script then takes a
+  # no-op handler, which exec resets, so the command gets Ctrl-C as normal and
+  # decides for itself. Its exit status is what awake returns.
+  trap '' INT
+  $caff &
+  cpid=$!
+  trap : INT
+  # Plain text on stderr, before and after: the command owns the terminal
+  # and stdout, so no animation and no escape codes in its way.
+  print -u2 -r -- "awake: $(printf -- $T[nt_run] "$span" "$cpid")"
+  "${cmd[@]}"
+  rc=$?
+  kill $cpid 2>/dev/null
+  print -u2 -r -- "awake: $T[nt_done]"
+  exit $rc
+fi
+
 # ── Foreground: breathing indicator ─────────────────────────────────────────
-caffeinate -disu -t $secs &
+$caff &
 cpid=$!
 
 finish() {
@@ -377,14 +463,14 @@ trap 'print -rn -- "$CUR_SHOW"' EXIT
 
 if (( ! TTY_OK )); then
   # Piped or redirected: no animation, just wait
-  print -r -- "awake: $(printf -- $T[nt_run] "$(human $secs)" "$cpid")"
+  print -r -- "awake: $(printf -- $T[nt_run] "$span" "$cpid")"
   wait $cpid
   print -r -- "awake: $T[nt_done]"
   exit 0
 fi
 
 print
-print -r -- "  ${C_TXT}awake${C_RST} ${C_DIM}·${C_RST} ${C_TXT}$(printf -- $T[fg_title] "$(human $secs)")${C_RST}"
+print -r -- "  ${C_TXT}awake${C_RST} ${C_DIM}·${C_RST} ${C_TXT}$(printf -- $T[fg_title] "$span")${C_RST}"
 print -r -- "  ${C_DIM}$T[fg_hint]${C_RST}"
 print
 print -rn -- "$CUR_HIDE"
@@ -419,7 +505,11 @@ while kill -0 $cpid 2>/dev/null; do
   if (( HAVE_ZSELECT )); then zselect -t $FPS_DELAY; else sleep 0.05; fi
 done
 
-if (( int(EPOCHREALTIME - start) >= secs - 1 )); then
+# Why it ended decides what to say: the watched process going away is the
+# reason -w exists, so it gets named rather than reported as "stopped".
+if [[ -n $watch ]] && ! ps -p $watch >/dev/null 2>&1; then
+  finish "$(printf -- $T[fin_exited] "pid $watch")"
+elif (( int(EPOCHREALTIME - start) >= secs - 1 )); then
   finish "$(printf -- $T[fin_expired] "$(human $secs)")"
 else
   finish "$T[fin_stopped]"
