@@ -30,8 +30,15 @@ cd awake
 ln -s "$PWD/awake" ~/.local/bin/awake    # any directory on your PATH
 ```
 
-Requires zsh (macOS ships it) and nothing else outside the base system:
-`caffeinate`, `pgrep`, `pmset`, `ps`, `nohup`.
+Works from any shell: bash, fish, sh, whatever you use. The script's
+`#!/bin/zsh` line picks the interpreter, not your login shell, and every Mac
+has `/bin/zsh`, just as every Mac has `caffeinate`. Nothing else is needed
+outside the base system: `caffeinate`, `pgrep`, `pmset`, `ps`, `nohup`.
+
+It stays a zsh script on purpose. The animation needs floating-point math and
+`sin()`, and forks zero times per frame thanks to zsh's `zselect` and
+`$EPOCHREALTIME`. The bash that macOS ships (3.2) has none of these, so a
+port would fork `sleep` and `date` on every frame.
 
 ## Usage
 
