@@ -57,9 +57,9 @@ if [[ $LANG_TAG == zh ]]; then
     u_cmd       "命令运行期间保持，退出码原样返回"
     u_wait      "保持到 pid 1234 退出"
     u_cap       "时长是上限，默认 8 小时"
-    u_status    "看有几个实例在跑、跑了多久"
-    u_off       "停掉所有实例"
-    u_off_alt   "含别的终端里的"
+    u_status    "查看当前用户的 caffeinate 进程及运行时间"
+    u_off       "停止当前用户的所有 caffeinate"
+    u_off_alt   "含其他终端或工具启动的"
     u_note1     "不改任何系统设置：只在运行期间持有 caffeinate 电源断言，"
     u_note2     "进程一退出，锁屏行为立刻恢复原状。"
     e_dur       "看不懂的时长「%s」，用 30m / 2h / 1h30m / 5400 这样的写法"
@@ -76,11 +76,11 @@ if [[ $LANG_TAG == zh ]]; then
     bg_hint     "查看 awake status  ·  停止 awake off"
     fg_title    "保持唤醒 %s"
     fg_hint     "屏保与自动锁屏已暂停  ·  Ctrl-C 结束"
-    st_idle     "awake 未运行"
+    st_idle     "caffeinate 未运行"
     st_ss_on    "屏保 %s后启动"
     st_ss_off   "屏保已关闭"
     st_ss_unk   "读不到屏保设置"
-    st_run      "awake 运行中"
+    st_run      "caffeinate 运行中"
     st_inst_1   "个实例"
     st_inst_n   "个实例"
     st_elapsed  "已保持"
@@ -107,9 +107,9 @@ else
     u_cmd       "stay awake while the command runs, passing its exit code"
     u_wait      "stay awake until pid 1234 exits"
     u_cap       "the duration is a ceiling, 8h by default"
-    u_status    "show running instances and how long they have held"
-    u_off       "stop every instance"
-    u_off_alt   "including ones in other terminals"
+    u_status    "show your caffeinate processes and their elapsed time"
+    u_off       "stop all your caffeinate processes"
+    u_off_alt   "including those started by other terminals or tools"
     u_note1     "Changes no system settings: it only holds a caffeinate power"
     u_note2     "assertion while running. On exit, lock behavior is back to normal."
     e_dur       "unrecognized duration \"%s\" — use 30m / 2h / 1h30m / 5400"
@@ -126,11 +126,11 @@ else
     bg_hint     "check: awake status  ·  stop: awake off"
     fg_title    "staying awake %s"
     fg_hint     "screen saver and auto-lock paused  ·  Ctrl-C to stop"
-    st_idle     "awake is not running"
+    st_idle     "caffeinate is not running"
     st_ss_on    "screen saver starts after %s"
     st_ss_off   "screen saver is disabled"
     st_ss_unk   "could not read the screen saver setting"
-    st_run      "awake is running"
+    st_run      "caffeinate is running"
     st_inst_1   "instance"
     st_inst_n   "instances"
     st_elapsed  "held for"
@@ -272,12 +272,9 @@ bar_width() {
   print -- $w
 }
 
-# Every caffeinate this tool started. No pidfile: that only remembers the last
-# instance, so one started in another terminal becomes unreachable. The
-# "-disu -t" combination is specific to this script. -U: another user's
-# instances are not ours to count, and `off` could not kill them anyway — it
-# would report them stopped while they kept running.
-running_pids() { pgrep -U $UID -f 'caffeinate -disu -t' 2>/dev/null }
+# Manage every caffeinate owned by this user, regardless of its arguments or
+# which tool started it. Match the process name exactly, never command text.
+running_pids() { pgrep -U "$UID" -x caffeinate 2>/dev/null }
 
 # What happens when awake is NOT running — read the real setting rather than
 # hardcoding one machine's value.
@@ -389,8 +386,7 @@ secs=$(parse_duration ${duration:-$DEFAULT_DURATION}) || exit 1
 
 # Every mode is the same caffeinate; -w and -- only add a reason to let go
 # sooner. The duration stays as a ceiling rather than being replaced, so a
-# hung process cannot keep the Mac unlockable indefinitely — and -t keeps the
-# command line matching running_pids.
+# hung process cannot keep the Mac unlockable indefinitely.
 #
 # A command is watched through this script's own pid rather than its own: it
 # has to run in the foreground to keep the terminal (a background job in a

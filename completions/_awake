@@ -14,8 +14,8 @@ fi
 
 local -a durations=( 30m 1h 2h 4h 8h )
 local -a subcommands=(
-  'status:show running instances and how long they have held'
-  'off:stop every instance'
+  'status:show your caffeinate processes and their elapsed time'
+  'off:stop all your caffeinate processes'
 )
 local ret=1
 _arguments -s \

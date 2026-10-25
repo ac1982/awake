@@ -68,8 +68,8 @@ awake 2h         stay awake for 2 hours (also 1h30m / 90m / 45s / 5400)
 awake -b 2h      run in the background, terminal can be closed
 awake -- cmd…    stay awake while the command runs, passing its exit code
 awake -w 1234    stay awake until pid 1234 exits (the duration is a ceiling, 8h by default)
-awake status     show running instances and how long they have held
-awake off        stop every instance, including ones in other terminals
+awake status     show your caffeinate processes and their elapsed time
+awake off        stop all your caffeinate processes, including other tools’
 ```
 
 Durations are written largest unit first, each unit at most once: `2h`,
@@ -97,7 +97,7 @@ and releases the hold anyway.
 `status` reports what is actually held, not what was requested:
 
 ```
-  ●  awake is running · 1 instance
+  ●  caffeinate is running · 1 instance
 
      pid 16531   held for 05:41      ttys002
 
@@ -111,7 +111,7 @@ When nothing is running it reads your real screen saver setting, so it tells
 you what will actually happen rather than a hardcoded guess:
 
 ```
-  ○  awake is not running
+  ○  caffeinate is not running
      screen saver starts after 3 min
 ```
 
@@ -133,10 +133,10 @@ idle timer, and a screen saver is nearly as bad as a lock for automation: the
 first synthetic click gets spent dismissing it. `-u` is what keeps that timer
 from ever building up.
 
-Instances are tracked by their command line rather than a pidfile. A pidfile
-only remembers the last one started, so an instance launched in another
-terminal becomes unreachable — `awake off` would silently miss it.
-Only your own instances count; another user's are not yours to stop.
+`status` and `off` manage all `caffeinate` processes owned by the current user,
+including those started manually or by other tools, with any arguments.
+Processes are matched by their exact name, not by text in their command line.
+No pidfile is needed, and other users' processes are left alone.
 
 Starting a second instance while one is running is allowed. Assertions stack,
 so it is harmless, and the running one may be something in active use

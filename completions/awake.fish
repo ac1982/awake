@@ -26,9 +26,9 @@ complete -c awake -n __awake_after_dashdash -a '(__awake_complete_command)'
 
 # status and off act immediately, so they only make sense first
 complete -c awake -n '__awake_own_args; and test (count (commandline -opc)) -eq 1' \
-    -a status -d 'show running instances and how long they have held'
+    -a status -d 'show your caffeinate processes and their elapsed time'
 complete -c awake -n '__awake_own_args; and test (count (commandline -opc)) -eq 1' \
-    -a off -d 'stop every instance'
+    -a off -d 'stop all your caffeinate processes'
 complete -c awake -n __awake_own_args -a '30m 1h 2h 4h 8h' -d duration
 
 complete -c awake -n __awake_own_args -s b -l background \
